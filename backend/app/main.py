@@ -1,28 +1,44 @@
+
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Literal
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
+from geoalchemy2.elements import WKTElement
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from backend.app.database import Base, SessionLocal, engine
 from backend.app.models import ComplaintRecord
 
 
+# Accepted values shared across the application
 Category = Literal[
-    "roads", "water_supply", "sewage", "waterlogging",
-    "sanitation", "streetlight", "fallen_tree",
-    "encroachment", "other",
+    "roads",
+    "water_supply",
+    "sewage",
+    "waterlogging",
+    "sanitation",
+    "streetlight",
+    "fallen_tree",
+    "encroachment",
+    "other",
 ]
+
 Urgency = Literal["low", "medium", "high", "critical"]
+
 ComplaintStatus = Literal[
-    "submitted", "assigned", "in_progress", "resolved", "rejected"
+    "submitted",
+    "assigned",
+    "in_progress",
+    "resolved",
+    "rejected",
 ]
 
 
+# Incoming complaint payload
 class ComplaintCreate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
@@ -33,6 +49,7 @@ class ComplaintCreate(BaseModel):
     image_reference: str | None = Field(default=None, max_length=1000)
 
 
+# Complaint returned by the API
 class Complaint(BaseModel):
     complaint_id: str
     description: str
@@ -53,6 +70,8 @@ class Complaint(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Create missing tables during local development.
+    # Existing tables are not automatically migrated.
     Base.metadata.create_all(bind=engine)
     yield
 
@@ -60,7 +79,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Municipal Grievance API",
     description="Backend API for CivicSense AI",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -75,8 +94,6 @@ def get_db():
 
 @app.get("/health")
 def health_check(db: Session = Depends(get_db)):
-    from sqlalchemy import text
-
     db.execute(text("SELECT 1"))
     return {"status": "ok", "database": "connected"}
 
@@ -91,11 +108,24 @@ def create_complaint(
     db: Session = Depends(get_db),
 ):
     if not payload.description.strip():
-        raise HTTPException(422, "Complaint description cannot be empty.")
+        raise HTTPException(
+            status_code=422,
+            detail="Complaint description cannot be empty.",
+        )
 
+    # Coordinates must be provided together.
     if (payload.latitude is None) != (payload.longitude is None):
         raise HTTPException(
-            422, "Provide both latitude and longitude, or neither."
+            status_code=422,
+            detail="Provide both latitude and longitude, or neither.",
+        )
+
+    # PostGIS geography points use longitude first, latitude second.
+    location = None
+    if payload.latitude is not None and payload.longitude is not None:
+        location = WKTElement(
+            f"POINT({payload.longitude} {payload.latitude})",
+            srid=4326,
         )
 
     record = ComplaintRecord(
@@ -103,11 +133,17 @@ def create_complaint(
         complaint_id=f"CMP-{uuid4().hex[:12].upper()}",
         created_at=datetime.now(timezone.utc),
         status="submitted",
+        location=location,
     )
 
-    db.add(record)
-    db.commit()
-    db.refresh(record)
+    try:
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+    except Exception:
+        db.rollback()
+        raise
+
     return record
 
 
@@ -123,7 +159,9 @@ def list_complaints(
     query = select(ComplaintRecord)
 
     if complaint_status:
-        query = query.where(ComplaintRecord.status == complaint_status)
+        query = query.where(
+            ComplaintRecord.status == complaint_status
+        )
 
     if category:
         query = query.where(ComplaintRecord.category == category)
@@ -132,7 +170,7 @@ def list_complaints(
     records = db.scalars(query.limit(limit)).all()
 
     return {
-        "items": [Complaint.model_validate(r) for r in records],
+        "items": [Complaint.model_validate(record) for record in records],
         "total": len(records),
     }
 
@@ -148,6 +186,9 @@ def get_complaint(
     record = db.get(ComplaintRecord, complaint_id)
 
     if record is None:
-        raise HTTPException(404, "Complaint not found.")
+        raise HTTPException(
+            status_code=404,
+            detail="Complaint not found.",
+        )
 
     return record

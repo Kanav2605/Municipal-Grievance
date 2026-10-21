@@ -1,5 +1,8 @@
+from geoalchemy2.elements import WKTElement
 from datetime import datetime, timezone
+from typing import Any
 
+from geoalchemy2 import Geography
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
@@ -37,8 +40,14 @@ class ComplaintRecord(Base):
         String(40), primary_key=True
     )
     description: Mapped[str] = mapped_column(Text, nullable=False)
-    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
-    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    latitude: Mapped[float | None] = mapped_column(
+        Float, nullable=True
+    )
+    longitude: Mapped[float | None] = mapped_column(
+        Float, nullable=True
+    )
+
     address_text: Mapped[str | None] = mapped_column(
         String(500), nullable=True
     )
@@ -59,7 +68,9 @@ class ComplaintRecord(Base):
         String(20), nullable=True
     )
     status: Mapped[str] = mapped_column(
-        String(30), nullable=False, default="submitted"
+        String(30),
+        nullable=False,
+        default="submitted",
     )
     master_incident_id: Mapped[str | None] = mapped_column(
         String(40), nullable=True
@@ -68,4 +79,13 @@ class ComplaintRecord(Base):
         DateTime(timezone=True),
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
+    )
+
+    location: Mapped[Any | None] = mapped_column(
+        Geography(
+            geometry_type="POINT",
+            srid=4326,
+            spatial_index=False,
+        ),
+        nullable=True,
     )
